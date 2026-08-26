@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | Rekap KP</title>
+    
+    <link rel="manifest" href="static/manifest.json">
+    <meta name="theme-color" content="#1a1a2e">
+    <link rel="apple-touch-icon" href="static/icons/icon-192.png">
+    
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="static/css/style.css">
+
+    <!-- Export Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <!-- Firebase SDK v8 Compat -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">📋 Rekap KP</div>
+        <div class="nav-user">
+            <span id="userEmailDisplay">👤 Loading...</span>
+            <button id="logoutBtn" class="btn btn-outline-danger">Logout</button>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="dashboard-layout">
+            <!-- Sidebar / Tabs -->
+            <aside class="sidebar glass-panel">
+                <button class="tab-btn active" data-target="tab-kegiatan">📝 Kegiatan Harian</button>
+                <button class="tab-btn" data-target="tab-profil">👤 Profil Mahasiswa</button>
+                <button class="tab-btn" data-target="tab-export">🔄 Export Data</button>
+            </aside>
+
+            <!-- Main Content -->
+            <div class="main-content">
+                <!-- TAB KEGIATAN -->
+                <section id="tab-kegiatan" class="tab-content active glass-panel">
+                    <h2 class="section-title">Catatan Kegiatan Harian</h2>
+                    
+                    <div class="filter-bar mt-3">
+                        <input type="text" id="searchInput" class="form-control" placeholder="🔍 Cari kata kunci...">
+                        <select id="filterMinggu" class="form-control">
+                            <option value="Semua">Semua Minggu</option>
+                        </select>
+                        <button id="resetFilterBtn" class="btn btn-outline">Reset Filter</button>
+                    </div>
+
+                    <div class="table-responsive mt-3">
+                        <table class="table" id="kegiatanTable">
+                            <thead>
+                                <tr>
+                                    <th>No</th>
+                                    <th>Tanggal</th>
+                                    <th>Minggu</th>
+                                    <th>Kegiatan</th>
+                                    <th>Keterangan</th>
+                                    <th>Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody id="kegiatanTbody">
+                                <!-- Populated by JS -->
+                            </tbody>
+                        </table>
+                        <div id="tableStatus" class="text-muted mt-2 text-sm">Loading data...</div>
+                    </div>
+
+                    <hr class="divider mt-4">
+
+                    <h3 class="subsection-title" id="formKegiatanTitle">Tambah Kegiatan</h3>
+                    <form id="kegiatanForm" class="mt-3">
+                        <input type="hidden" id="editDocId" value="">
+                        <div class="grid-2">
+                            <div class="form-group">
+                                <label>Tanggal (dd/mm/yyyy)</label>
+                                <input type="text" id="tanggal" class="form-control" required placeholder="Contoh: 25/08/2026">
+                            </div>
+                            <div class="form-group">
+                                <label>Minggu ke-</label>
+                                <select id="minggu" class="form-control" required></select>
+                            </div>
+                        </div>
+                        <div class="form-group mt-2">
+                            <label>Kegiatan</label>
+                            <textarea id="kegiatan" class="form-control" rows="2" required></textarea>
+                        </div>
+                        <div class="form-group mt-2">
+                            <label>Keterangan/Hasil</label>
+                            <textarea id="keterangan" class="form-control" rows="2" required></textarea>
+                        </div>
+                        <div class="flex-row mt-3 gap-2">
+                            <button type="submit" class="btn btn-primary" id="saveKegiatanBtn">➕ Simpan Kegiatan</button>
+                            <button type="button" class="btn btn-outline hidden" id="cancelEditBtn">Batal Edit</button>
+                        </div>
+                    </form>
+                </section>
+
+                <!-- TAB PROFIL -->
+                <section id="tab-profil" class="tab-content glass-panel hidden">
+                    <h2 class="section-title">Data Profil Kerja Praktek</h2>
+                    <form id="profilForm" class="mt-4">
+                        <div class="form-section">
+                            <h3>Data Mahasiswa</h3>
+                            <div class="grid-2">
+                                <div class="form-group"><label>Nama Lengkap</label><input type="text" id="p_nama" class="form-control"></div>
+                                <div class="form-group"><label>NIM</label><input type="text" id="p_nim" class="form-control"></div>
+                                <div class="form-group"><label>Program Studi</label><input type="text" id="p_prodi" class="form-control"></div>
+                                <div class="form-group"><label>Fakultas</label><input type="text" id="p_fakultas" class="form-control"></div>
+                                <div class="form-group"><label>Universitas</label><input type="text" id="p_universitas" class="form-control"></div>
+                            </div>
+                        </div>
+                        <div class="form-section mt-4">
+                            <h3>Data Perusahaan/Instansi</h3>
+                            <div class="grid-2">
+                                <div class="form-group"><label>Nama Perusahaan</label><input type="text" id="p_perusahaan" class="form-control"></div>
+                                <div class="form-group"><label>Alamat</label><input type="text" id="p_alamat_perusahaan" class="form-control"></div>
+                                <div class="form-group"><label>Periode Mulai</label><input type="text" id="p_periode_mulai" class="form-control"></div>
+                                <div class="form-group"><label>Periode Selesai</label><input type="text" id="p_periode_selesai" class="form-control"></div>
+                            </div>
+                        </div>
+                        <div class="form-section mt-4">
+                            <h3>Data Pembimbing</h3>
+                            <div class="grid-2">
+                                <div class="form-group"><label>Dosen Pembimbing</label><input type="text" id="p_dosen_pembimbing" class="form-control"></div>
+                                <div class="form-group"><label>Pembimbing Lapangan</label><input type="text" id="p_pembimbing_lapangan" class="form-control"></div>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary mt-4" id="saveProfilBtn">💾 Simpan Profil</button>
+                    </form>
+                </section>
+
+                <!-- TAB EXPORT -->
+                <section id="tab-export" class="tab-content glass-panel hidden">
+                    <h2 class="section-title">Export Data</h2>
+                    <div class="info-box mt-4">
+                        <h3>📊 Ringkasan Data</h3>
+                        <p id="exportStats" class="text-muted">Loading...</p>
+                    </div>
+                    <h3 class="mt-4">📤 Download Laporan</h3>
+                    <p class="text-muted text-sm">Hanya export Excel yang didukung pada versi Serverless ini (Word dapat di-generate mandiri lewat Excel).</p>
+                    <div class="flex-row gap-3 mt-2">
+                        <button id="exportExcelBtn" class="btn btn-success">📊 Export ke Excel (.xlsx)</button>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+    <script src="static/js/firebase-config.js"></script>
+    <script src="static/js/app.js"></script>
+</body>
+</html>

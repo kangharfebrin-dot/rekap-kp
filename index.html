@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | Rekap KP</title>
+    
+    <link rel="manifest" href="static/manifest.json">
+    <meta name="theme-color" content="#1a1a2e">
+    <link rel="apple-touch-icon" href="static/icons/icon-192.png">
+    
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="static/css/style.css">
+    
+    <!-- Firebase SDK v8 Compat (for vanilla JS without bundler) -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+</head>
+<body>
+    <main class="container">
+        <div class="auth-container">
+            <div class="glass-panel auth-card">
+                <h1 class="gradient-text text-center">Rekap KP</h1>
+                <p class="text-center text-muted">Silakan login untuk melanjutkan</p>
+                
+                <form id="loginForm" class="mt-4">
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" id="email" class="form-control" required placeholder="Masukkan email">
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="password" class="form-control" required placeholder="Masukkan password (min 6 kar)">
+                    </div>
+                    
+                    <div id="authAlert" class="alert hidden"></div>
+                    
+                    <button type="submit" class="btn btn-primary btn-block mt-4" id="loginBtn">Login</button>
+                    <button type="button" class="btn btn-outline btn-block mt-2" id="registerBtn">Daftar Baru</button>
+                </form>
+            </div>
+        </div>
+    </main>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register("static/sw.js").catch(console.error);
+            });
+        }
+    </script>
+    <script src="static/js/firebase-config.js"></script>
+    <script src="static/js/auth.js"></script>
+</body>
+</html>
