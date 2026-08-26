@@ -5,23 +5,140 @@ Untuk menyusun laporan kerja praktek
 
 import customtkinter as ctk
 from tkinter import ttk, messagebox, filedialog
-import json, os, datetime
+import json, os, datetime, sqlite3, hashlib
 from tkcalendar import DateEntry
 
 # === DATA MANAGER ===
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_kp.json")
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+DB_FILE = os.path.join(DATA_DIR, "database_kp.db")
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT NOT NULL
+        )
+    ''')
+    
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "role" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+        
+    cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                       ('admin', hash_password('admin123'), 'admin'))
+    
+    conn.commit()
+    
+    if os.path.exists(USERS_FILE):
+        cursor.execute("SELECT COUNT(*) FROM users")
+        if cursor.fetchone()[0] <= 1:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                try:
+                    users = json.load(f)
+                    for user, pwd in users.items():
+                        if user != 'admin':
+                            cursor.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)", 
+                                           (user, hash_password(pwd), 'user'))
+                    conn.commit()
+                    os.rename(USERS_FILE, USERS_FILE + ".bak")
+                except Exception:
+                    pass
+    conn.close()
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_login_db(username, password):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT password, role FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    if row and row[0] == hash_password(password):
+        return True, row[1]
+    return False, None
+
+def register_user_db(username, password, role='user'):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
+                       (username, hash_password(password), role))
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False
+    conn.close()
+    return success
+
+def fetch_all_users_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, role FROM users")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    detailed_rows = []
+    for uname, role in rows:
+        nama = "-"
+        nim = "-"
+        perusahaan = "-"
+        jml_keg = 0
+        file_path = get_data_file(uname)
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    nama = data.get("profil", {}).get("nama", "-")
+                    nim = data.get("profil", {}).get("nim", "-")
+                    perusahaan = data.get("profil", {}).get("perusahaan", "-")
+                    jml_keg = len(data.get("kegiatan", []))
+            except Exception:
+                pass
+        detailed_rows.append((uname, role, nama, nim, perusahaan, jml_keg))
+    return detailed_rows
+
+def update_user_db(username, password, role):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    if password:
+        cursor.execute("UPDATE users SET password = ?, role = ? WHERE username = ?", 
+                       (hash_password(password), role, username))
+    else:
+        cursor.execute("UPDATE users SET role = ? WHERE username = ?", 
+                       (role, username))
+    conn.commit()
+    conn.close()
+
+def delete_user_db(username):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE username = ?", (username,))
+    conn.commit()
+    conn.close()
+
+def get_data_file(username):
+    return os.path.join(DATA_DIR, f"data_kp_{username}.json")
+
+def load_data(username):
+    file_path = get_data_file(username)
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"profil": {"nama":"","nim":"","prodi":"","fakultas":"","universitas":"",
                        "perusahaan":"","alamat_perusahaan":"","periode_mulai":"","periode_selesai":"",
                        "dosen_pembimbing":"","pembimbing_lapangan":""},
             "kegiatan": []}
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+def save_data(username, data):
+    file_path = get_data_file(username)
+    with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 # === MAIN APP ===
@@ -34,11 +151,265 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.data = load_data()
+        self.current_user = None
+        self.data = None
         self.editing_idx = None
+        self.admin_editing_user = None
 
-        # Sidebar
-        sidebar = ctk.CTkFrame(self, width=220, corner_radius=0, fg_color="#1a1a2e")
+        init_db()
+
+        self.login_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.dashboard_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.admin_container = ctk.CTkFrame(self, fg_color="transparent")
+        
+        self.build_login_ui()
+        self.build_dashboard_ui()
+        self.build_admin_dashboard_ui()
+        
+        self.show_login_page()
+
+    def save_current_data(self):
+        if self.current_user and self.data:
+            save_data(self.current_user, self.data)
+
+    def show_login_page(self):
+        self.dashboard_container.pack_forget()
+        self.admin_container.pack_forget()
+        self.login_container.pack(fill="both", expand=True)
+
+    def show_dashboard_page(self):
+        self.login_container.pack_forget()
+        self.admin_container.pack_forget()
+        self.dashboard_container.pack(fill="both", expand=True)
+        self.data = load_data(self.current_user)
+        self.refresh_ui_with_data()
+        self.show_page("kegiatan")
+
+    def show_admin_page(self):
+        self.login_container.pack_forget()
+        self.dashboard_container.pack_forget()
+        self.admin_container.pack(fill="both", expand=True)
+        self.refresh_admin_table()
+
+    def build_login_ui(self):
+        frame = ctk.CTkFrame(self.login_container, width=400, corner_radius=15)
+        frame.place(relx=0.5, rely=0.5, anchor="center")
+        
+        ctk.CTkLabel(frame, text="Login Akun", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(30, 20))
+        
+        self.user_entry = ctk.CTkEntry(frame, width=250, placeholder_text="Username")
+        self.user_entry.pack(pady=10, padx=40)
+        
+        self.pass_entry = ctk.CTkEntry(frame, width=250, placeholder_text="Password", show="*")
+        self.pass_entry.pack(pady=10, padx=40)
+        
+        ctk.CTkButton(frame, text="Login", width=250, font=ctk.CTkFont(weight="bold"), 
+                      command=self.handle_login).pack(pady=(20, 10))
+                      
+        ctk.CTkButton(frame, text="Register Baru", width=250, fg_color="transparent", 
+                      border_width=1, command=self.handle_register).pack(pady=(0, 30))
+
+    def handle_login(self):
+        username = self.user_entry.get().strip().lower()
+        password = self.pass_entry.get()
+        if not username or not password:
+            messagebox.showwarning("Peringatan", "Username dan Password tidak boleh kosong!")
+            return
+        
+        success, role = verify_login_db(username, password)
+        if success:
+            self.current_user = username
+            self.user_entry.delete(0, "end")
+            self.pass_entry.delete(0, "end")
+            if role == 'admin':
+                self.show_admin_page()
+            else:
+                self.show_dashboard_page()
+        else:
+            messagebox.showerror("Error", "Username atau Password salah!")
+
+    def handle_register(self):
+        username = self.user_entry.get().strip().lower()
+        password = self.pass_entry.get()
+        if not username or not password:
+            messagebox.showwarning("Peringatan", "Username dan Password tidak boleh kosong!")
+            return
+        if register_user_db(username, password):
+            messagebox.showinfo("Sukses", "Akun berhasil dibuat! Silakan login.")
+        else:
+            messagebox.showwarning("Peringatan", "Username sudah terdaftar!")
+
+    def handle_logout(self):
+        self.current_user = None
+        self.data = None
+        self.show_login_page()
+
+    def build_admin_dashboard_ui(self):
+        sidebar = ctk.CTkFrame(self.admin_container, width=220, corner_radius=0, fg_color="#1a1a2e")
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        ctk.CTkLabel(sidebar, text="👑 Admin Panel", font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color="#e94560").pack(pady=(30,5))
+        ctk.CTkLabel(sidebar, text="Manajemen Sistem", font=ctk.CTkFont(size=12),
+                     text_color="#888").pack(pady=(0,30))
+
+        btn = ctk.CTkButton(sidebar, text="👥  Manage Users", font=ctk.CTkFont(size=15), height=45,
+                            fg_color="transparent", hover_color="#e94560", anchor="w")
+        btn.pack(fill="x", padx=15, pady=4)
+
+        ctk.CTkButton(sidebar, text="🚪 Logout", font=ctk.CTkFont(size=15), height=45,
+                      fg_color="transparent", hover_color="#c0392b", anchor="w",
+                      command=self.handle_logout).pack(side="bottom", fill="x", padx=15, pady=20)
+
+        main = ctk.CTkFrame(self.admin_container, fg_color="#16213e", corner_radius=0)
+        main.pack(side="right", fill="both", expand=True)
+        
+        page = ctk.CTkFrame(main, fg_color="transparent")
+        page.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(page, text="Manajemen Pengguna (CRUD)", font=ctk.CTkFont(size=20, weight="bold")).pack(anchor="w")
+
+        # Form CRUD Admin
+        admin_form = ctk.CTkFrame(page, fg_color="#1a1a2e", corner_radius=12)
+        admin_form.pack(fill="x", pady=10)
+        
+        row1 = ctk.CTkFrame(admin_form, fg_color="transparent")
+        row1.pack(fill="x", padx=15, pady=(12,5))
+        
+        ctk.CTkLabel(row1, text="Username:").pack(side="left")
+        self.admin_user_entry = ctk.CTkEntry(row1, width=150)
+        self.admin_user_entry.pack(side="left", padx=5)
+        
+        ctk.CTkLabel(row1, text="Password:").pack(side="left", padx=(10,0))
+        self.admin_pass_entry = ctk.CTkEntry(row1, width=150, show="*")
+        self.admin_pass_entry.pack(side="left", padx=5)
+        
+        ctk.CTkLabel(row1, text="Role:").pack(side="left", padx=(10,0))
+        self.admin_role_var = ctk.StringVar(value="user")
+        ctk.CTkOptionMenu(row1, variable=self.admin_role_var, values=["user", "admin"], width=100, fg_color="#e94560").pack(side="left", padx=5)
+        
+        btn_row = ctk.CTkFrame(admin_form, fg_color="transparent")
+        btn_row.pack(fill="x", padx=15, pady=(5,12))
+        
+        self.admin_add_btn = ctk.CTkButton(btn_row, text="➕ Tambah Akun", fg_color="#e94560", hover_color="#c81e45", command=self.admin_add_user)
+        self.admin_add_btn.pack(side="left", padx=(0,8))
+        
+        ctk.CTkButton(btn_row, text="🗑️ Hapus Akun", fg_color="#c0392b", hover_color="#922b21", command=self.admin_delete_user).pack(side="left", padx=(0,8))
+        ctk.CTkButton(btn_row, text="🔄 Batal Edit", fg_color="#555", hover_color="#777", command=self.admin_cancel_edit).pack(side="left")
+
+        # Table
+        table_frame = ctk.CTkFrame(page, fg_color="#1a1a2e", corner_radius=12)
+        table_frame.pack(fill="both", expand=True, pady=15)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", background="#1a1a2e", foreground="white",
+                        fieldbackground="#1a1a2e", rowheight=30, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background="#e94560", foreground="white",
+                        font=("Segoe UI", 10, "bold"))
+        style.map("Treeview", background=[("selected", "#e94560")])
+
+        cols = ("no", "username", "role", "nama", "nim", "perusahaan", "jml")
+        self.admin_tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
+
+        for cid, txt, w in [("no","No",40), ("username","Username",120), ("role","Role",80),
+                            ("nama","Nama Lengkap",150), ("nim","NIM",90),
+                            ("perusahaan","Perusahaan",150), ("jml","Jml Keg",70)]:
+            self.admin_tree.heading(cid, text=txt)
+            self.admin_tree.column(cid, width=w, minwidth=50)
+
+        sb = ttk.Scrollbar(table_frame, orient="vertical", command=self.admin_tree.yview)
+        self.admin_tree.configure(yscrollcommand=sb.set)
+        self.admin_tree.pack(side="left", fill="both", expand=True, padx=(10,0), pady=10)
+        sb.pack(side="right", fill="y", pady=10, padx=(0,10))
+        
+        self.admin_tree.bind("<Double-1>", self.on_admin_double_click)
+                      
+        self.admin_count_label = ctk.CTkLabel(page, text="", font=ctk.CTkFont(size=12), text_color="#888")
+        self.admin_count_label.pack(anchor="w", pady=5)
+
+    def on_admin_double_click(self, event):
+        sel = self.admin_tree.selection()
+        if not sel: return
+        item = self.admin_tree.item(sel[0])
+        uname = item['values'][1]
+        role = item['values'][2]
+        
+        self.admin_editing_user = uname
+        self.admin_add_btn.configure(text="✏️ Update Akun")
+        self.admin_user_entry.delete(0, "end")
+        self.admin_user_entry.insert(0, uname)
+        self.admin_user_entry.configure(state="disabled")
+        self.admin_pass_entry.delete(0, "end")
+        self.admin_role_var.set(role)
+        
+    def admin_cancel_edit(self):
+        self.admin_editing_user = None
+        self.admin_add_btn.configure(text="➕ Tambah Akun")
+        self.admin_user_entry.configure(state="normal")
+        self.admin_user_entry.delete(0, "end")
+        self.admin_pass_entry.delete(0, "end")
+        self.admin_role_var.set("user")
+        
+    def admin_add_user(self):
+        uname = self.admin_user_entry.get().strip().lower()
+        pwd = self.admin_pass_entry.get()
+        role = self.admin_role_var.get()
+        
+        if not uname:
+            messagebox.showwarning("Peringatan", "Username tidak boleh kosong!")
+            return
+            
+        if self.admin_editing_user:
+            if self.admin_editing_user == self.current_user and role != 'admin':
+                messagebox.showwarning("Peringatan", "Anda tidak bisa mengubah role Anda sendiri menjadi user!")
+                return
+            update_user_db(self.admin_editing_user, pwd, role)
+            messagebox.showinfo("Sukses", f"Akun '{self.admin_editing_user}' berhasil diupdate!")
+            self.admin_cancel_edit()
+            self.refresh_admin_table()
+        else:
+            if not pwd:
+                messagebox.showwarning("Peringatan", "Password tidak boleh kosong untuk akun baru!")
+                return
+            if register_user_db(uname, pwd, role):
+                messagebox.showinfo("Sukses", f"Akun '{uname}' berhasil dibuat!")
+                self.admin_cancel_edit()
+                self.refresh_admin_table()
+            else:
+                messagebox.showwarning("Peringatan", "Username sudah terdaftar!")
+
+    def refresh_admin_table(self):
+        for item in self.admin_tree.get_children():
+            self.admin_tree.delete(item)
+        users = fetch_all_users_db()
+        for i, u in enumerate(users):
+            self.admin_tree.insert("", "end", values=(i+1, u[0], u[1], u[2], u[3], u[4], u[5]))
+        self.admin_count_label.configure(text=f"Total: {len(users)} pengguna terdaftar")
+
+    def admin_delete_user(self):
+        sel = self.admin_tree.selection()
+        if not sel:
+            messagebox.showwarning("Peringatan", "Pilih user yang ingin dihapus!")
+            return
+        idx = self.admin_tree.index(sel[0])
+        item = self.admin_tree.item(sel[0])
+        uname = item['values'][1]
+        role = item['values'][2]
+        
+        if role == 'admin' and uname == self.current_user:
+            messagebox.showwarning("Peringatan", "Anda tidak bisa menghapus akun Anda sendiri saat sedang login!")
+            return
+            
+        if messagebox.askyesno("Konfirmasi", f"Apakah Anda yakin ingin menghapus pengguna '{uname}'?\nCatatan: Data laporan mereka akan tetap tersimpan sebagai arsip."):
+            delete_user_db(uname)
+            self.admin_cancel_edit()
+            self.refresh_admin_table()
+            messagebox.showinfo("Sukses", f"Pengguna '{uname}' berhasil dihapus.")
+
+    def build_dashboard_ui(self):
+        sidebar = ctk.CTkFrame(self.dashboard_container, width=220, corner_radius=0, fg_color="#1a1a2e")
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
@@ -47,7 +418,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(sidebar, text="Kerja Praktek Logger", font=ctk.CTkFont(size=12),
                      text_color="#888").pack(pady=(0,30))
 
-        self.main_frame = ctk.CTkFrame(self, fg_color="#16213e", corner_radius=0)
+        self.main_frame = ctk.CTkFrame(self.dashboard_container, fg_color="#16213e", corner_radius=0)
         self.main_frame.pack(side="right", fill="both", expand=True)
 
         self.pages = {}
@@ -58,10 +429,19 @@ class App(ctk.CTk):
                                 command=lambda n=name: self.show_page(n))
             btn.pack(fill="x", padx=15, pady=4)
 
+        ctk.CTkButton(sidebar, text="🚪 Logout", font=ctk.CTkFont(size=15), height=45,
+                      fg_color="transparent", hover_color="#c0392b", anchor="w",
+                      command=self.handle_logout).pack(side="bottom", fill="x", padx=15, pady=20)
+
         self.build_profil_page()
         self.build_kegiatan_page()
         self.build_export_page()
-        self.show_page("kegiatan")
+
+    def refresh_ui_with_data(self):
+        for key, entry in self.profil_entries.items():
+            entry.delete(0, "end")
+            entry.insert(0, self.data["profil"].get(key, ""))
+        self.refresh_table()
 
     def show_page(self, name):
         for p in self.pages.values():
@@ -95,7 +475,6 @@ class App(ctk.CTk):
                 ctk.CTkLabel(row, text=label, width=220, anchor="w").pack(side="left")
                 e = ctk.CTkEntry(row, width=400, placeholder_text=f"Masukkan {label.lower()}")
                 e.pack(side="left", padx=(10,0))
-                e.insert(0, self.data["profil"].get(key, ""))
                 self.profil_entries[key] = e
 
         ctk.CTkButton(page, text="💾  Simpan Profil", font=ctk.CTkFont(size=14, weight="bold"),
@@ -105,7 +484,7 @@ class App(ctk.CTk):
     def save_profil(self):
         for key, entry in self.profil_entries.items():
             self.data["profil"][key] = entry.get().strip()
-        save_data(self.data)
+        self.save_current_data()
         messagebox.showinfo("Sukses", "Profil berhasil disimpan!")
 
     # === KEGIATAN PAGE ===
@@ -181,23 +560,22 @@ class App(ctk.CTk):
         sb.pack(side="right", fill="y", pady=10, padx=(0,10))
 
         self.tree.bind("<Double-1>", self.on_double_click)
-        self.refresh_table()
 
         # Count label
         self.count_label = ctk.CTkLabel(page, text="", font=ctk.CTkFont(size=12), text_color="#888")
         self.count_label.pack(anchor="w")
-        self.update_count()
 
     def refresh_table(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for i, k in enumerate(self.data["kegiatan"]):
-            self.tree.insert("", "end", values=(i+1, k["tanggal"], f"Minggu {k['minggu']}",
-                                                 k["kegiatan"], k["keterangan"]))
+        if self.data and "kegiatan" in self.data:
+            for i, k in enumerate(self.data["kegiatan"]):
+                self.tree.insert("", "end", values=(i+1, k["tanggal"], f"Minggu {k['minggu']}",
+                                                     k["kegiatan"], k["keterangan"]))
         self.update_count()
 
     def update_count(self):
-        if hasattr(self, "count_label"):
+        if hasattr(self, "count_label") and self.data and "kegiatan" in self.data:
             self.count_label.configure(text=f"Total: {len(self.data['kegiatan'])} kegiatan tercatat")
 
     def add_kegiatan(self):
@@ -219,7 +597,7 @@ class App(ctk.CTk):
         else:
             self.data["kegiatan"].append(entry)
 
-        save_data(self.data)
+        self.save_current_data()
         self.clear_form()
         self.refresh_table()
 
@@ -231,7 +609,7 @@ class App(ctk.CTk):
         idx = self.tree.index(sel[0])
         if messagebox.askyesno("Konfirmasi", "Hapus kegiatan ini?"):
             self.data["kegiatan"].pop(idx)
-            save_data(self.data)
+            self.save_current_data()
             self.cancel_edit()
             self.refresh_table()
 
